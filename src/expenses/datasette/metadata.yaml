@@ -1,0 +1,458 @@
+# Datasette metadata for the expenses database (datasette 0.65, datasette-dashboards 0.8).
+# Generated layout is hand-maintained; keep SQL parameters :from, :to, :include_one_offs
+# ('' means: no bound / include one-offs, '0' excludes one-offs).
+title: Expenses
+description: Personal expenses in EUR, built from MyExpenses backups.
+description_html: >-
+  Spending analysis in EUR. See <a href="/-/dashboards">dashboards</a> and the canned queries
+  below. Parameters: <code>from</code>/<code>to</code> as ISO dates or months
+  (<code>2024-05</code>), <code>include_one_offs</code> = 1 or 0.
+
+databases:
+  expenses:
+    title: Expenses
+    tables:
+      expenses:
+        title: Expenses
+        sort_desc: date
+        label_column: payee
+        facets:
+          - kind
+          - category_top
+          - account
+          - year
+          - is_work
+          - in_country
+          - trip
+          - one_off
+          - outlier
+        size: 100
+    queries:
+      spending_by_month_category:
+        title: Spending by month and category
+        description: Expenses in EUR per month and top-level category.
+        sql: |-
+          select month, coalesce(category_top, '(uncategorized)') as category_top,
+                 round(sum(spend_eur), 2) as spend_eur, count(*) as n
+          from expenses where kind = 'expense'
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          group by 1, 2 order by 1 desc, 3 desc
+      spending_by_category_path:
+        title: Spending by category path
+        description: Expenses in EUR per full category path for the chosen period.
+        sql: |-
+          select coalesce(category_path, '(uncategorized)') as category_path,
+                 round(sum(spend_eur), 2) as spend_eur, count(*) as n
+          from expenses where kind = 'expense'
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          group by 1 order by 2 desc
+      net_by_category:
+        title: Net by category (with refunds)
+        description: Expenses minus positive entries (refunds, income) per category; transfers excluded.
+        sql: |-
+          select coalesce(category_top, '(uncategorized)') as category_top,
+                 coalesce(category_path, '(uncategorized)') as category_path,
+                 round(sum(spend_eur), 2) as net_spend_eur,
+                 round(sum(case when kind = 'income' then -spend_eur else 0 end), 2) as refunds_eur,
+                 count(*) as n
+          from expenses where kind in ('expense', 'income')
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          group by 1, 2 order by 3 desc
+      spending_by_tag:
+        title: Spending by tag
+        description: Expenses in EUR per tag (a row with several tags counts towards each).
+        sql: |-
+          select t.value as tag, round(sum(e.spend_eur), 2) as spend_eur, count(*) as n
+          from expenses as e, json_each(e.tags) as t
+          where e.kind = 'expense'
+          and e.date >= coalesce(nullif(:from, ''), '0000')
+          and e.date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(e.one_off, 0) = 0)
+          group by 1 order by 2 desc
+      work_spending_by_month:
+        title: Work spending by month
+        description: Expenses flagged is_work, per month.
+        sql: |-
+          select month, round(sum(spend_eur), 2) as spend_eur, count(*) as n
+          from expenses where kind = 'expense'
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          and is_work = 1
+          group by 1 order by 1 desc
+      country_by_month:
+        title: Country vs not-country by month
+        description: Expenses made in the tracked home country versus elsewhere, per month.
+        sql: |-
+          select month,
+                 round(sum(case when in_country = 1 then spend_eur else 0 end), 2) as in_country_eur,
+                 round(sum(case when coalesce(in_country, 0) = 0 then spend_eur else 0 end), 2) as elsewhere_eur
+          from expenses where kind = 'expense'
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          group by 1 order by 1 desc
+      trip_totals:
+        title: Trip totals
+        description: Expenses per trip tag with first and last date.
+        sql: |-
+          select trip, min(date) as first_date, max(date) as last_date,
+                 round(sum(spend_eur), 2) as spend_eur, count(*) as n
+          from expenses where kind = 'expense'
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          and trip is not null
+          group by 1 order by 2 desc
+      top_payees:
+        title: Top payees
+        description: Payees with the highest total spending.
+        sql: |-
+          select coalesce(payee, '(none)') as payee, round(sum(spend_eur), 2) as spend_eur, count(*) as n
+          from expenses where kind = 'expense'
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          group by 1 order by 2 desc limit 50
+      uncategorized_rows:
+        title: Uncategorized rows
+        description: Rows without a category (view uncategorized).
+        sql: |-
+          select * from uncategorized
+          where date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          order by date desc
+      one_offs:
+        title: One-offs
+        description: Expenses flagged as one-off (always listed, regardless of include_one_offs).
+        sql: |-
+          select date, payee, category_path, round(spend_eur, 2) as spend_eur, rule_notes, uuid
+          from expenses
+          where kind = 'expense' and one_off = 1
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          order by date desc
+      outliers:
+        title: Outliers
+        description: Expenses flagged as statistical outliers within their category.
+        sql: |-
+          select date, payee, category_path, round(spend_eur, 2) as spend_eur, rule_notes, uuid
+          from expenses
+          where kind = 'expense' and outlier = 1
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          order by date desc
+      transfers:
+        title: Transfers
+        description: Money moved between accounts or people, not counted as spending (view transfers).
+        sql: |-
+          select * from transfers
+          where date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          order by date desc
+      original_currency_breakdown:
+        title: Original currency breakdown
+        description: Count, original amount and EUR spending by original and account currency.
+        sql: |-
+          select coalesce(original_currency, account_currency) as original_currency, account_currency,
+                 count(*) as n, round(sum(original_amount), 2) as sum_original_amount,
+                 round(sum(spend_eur), 2) as spend_eur
+          from expenses where kind = 'expense'
+          and date >= coalesce(nullif(:from, ''), '0000')
+          and date <= coalesce(nullif(:to, ''), '9999') || '~'
+          and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          group by 1, 2 order by 5 desc
+      missing_eur:
+        title: Rows missing EUR amount
+        description: Rows with no EUR amount (no exchange rate available).
+        sql: |-
+          select date, account, account_currency, amount, original_currency, original_amount, payee, uuid
+          from expenses where amount_eur is null
+          order by date desc
+
+plugins:
+  datasette-dashboards:
+    overview:
+      title: Spending overview
+      description: Expenses in EUR; transfers and income rows are excluded. Leave filters empty for everything.
+      layout:
+        - [total_spend, monthly_avg, monthly_avg]
+        - [monthly_by_category, monthly_by_category, by_category]
+        - [work_vs_other, country_vs_elsewhere, trips]
+        - [top_payees, top_payees, flagged]
+      filters:
+        from:
+          name: From (date or month)
+          type: text
+        to:
+          name: To (date or month)
+          type: text
+        include_one_offs:
+          name: Include one-offs
+          type: select
+          options: ['1', '0']
+      charts:
+        total_spend:
+          title: Total spend
+          db: expenses
+          library: metric
+          query: |-
+            select cast(round(coalesce(sum(spend_eur), 0)) as integer) as total
+            from expenses where kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          display:
+            field: total
+            suffix: ' EUR'
+        monthly_avg:
+          title: Monthly average
+          db: expenses
+          library: metric
+          query: |-
+            select cast(round(coalesce(sum(spend_eur) / nullif(count(distinct month), 0), 0)) as integer) as monthly_avg
+            from expenses where kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          display:
+            field: monthly_avg
+            suffix: ' EUR / month'
+        monthly_by_category:
+          title: Monthly spend by category
+          db: expenses
+          library: vega-lite
+          query: |-
+            select month, coalesce(category_top, '(uncategorized)') as category_top,
+                   round(sum(spend_eur), 2) as spend_eur
+            from expenses where kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            group by 1, 2 order by 1
+          display:
+            mark: {type: bar, tooltip: true}
+            height: 320
+            encoding:
+              x: {field: month, type: ordinal, title: null}
+              y: {field: spend_eur, type: quantitative, aggregate: sum, title: EUR}
+              color:
+                field: category_top
+                type: nominal
+                scale: {range: ['#4c6a8a', '#8aa4bd', '#9aa5b1', '#6b7280', '#b08968', '#8d9f87', '#c7b299', '#5d6d7e', '#b7b7b7', '#7f8c8d', '#a58f86', '#6f8f8f']}
+                legend: {title: null}
+        by_category:
+          title: Spend by category
+          db: expenses
+          library: vega-lite
+          query: |-
+            select coalesce(category_top, '(uncategorized)') as category_top, round(sum(spend_eur), 2) as spend_eur
+            from expenses where kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            group by 1 order by 2 desc
+          display:
+            mark: {type: bar, color: '#4c6a8a', tooltip: true}
+            height: 320
+            encoding:
+              y: {field: category_top, type: nominal, sort: '-x', title: null}
+              x: {field: spend_eur, type: quantitative, title: EUR}
+        work_vs_other:
+          title: Work vs non-work by month
+          db: expenses
+          library: vega-lite
+          query: |-
+            select month, case when is_work = 1 then 'Work' else 'Non-work' end as kind_of_spend,
+                   round(sum(spend_eur), 2) as spend_eur
+            from expenses where kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            group by 1, 2 order by 1
+          display:
+            mark: {type: bar, tooltip: true}
+            encoding:
+              x: {field: month, type: ordinal, title: null}
+              y: {field: spend_eur, type: quantitative, aggregate: sum, title: EUR}
+              color:
+                field: kind_of_spend
+                type: nominal
+                scale: {domain: [Work, Non-work], range: ['#4c6a8a', '#b7b7b7']}
+                legend: {title: null}
+        country_vs_elsewhere:
+          title: Country vs not-country by month
+          db: expenses
+          library: vega-lite
+          query: |-
+            select month, case when in_country = 1 then 'In country' else 'Elsewhere' end as place,
+                   round(sum(spend_eur), 2) as spend_eur
+            from expenses where kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            group by 1, 2 order by 1
+          display:
+            mark: {type: bar, tooltip: true}
+            encoding:
+              x: {field: month, type: ordinal, title: null}
+              y: {field: spend_eur, type: quantitative, aggregate: sum, title: EUR}
+              color:
+                field: place
+                type: nominal
+                scale: {domain: [In country, Elsewhere], range: ['#8d9f87', '#b08968']}
+                legend: {title: null}
+        trips:
+          title: Trip totals
+          db: expenses
+          library: vega-lite
+          query: |-
+            select trip, min(date) as first_date, max(date) as last_date, round(sum(spend_eur), 2) as spend_eur
+            from expenses where kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            and trip is not null
+            group by 1 order by 2
+          display:
+            mark: {type: bar, color: '#6b7280', tooltip: true}
+            encoding:
+              y: {field: trip, type: nominal, sort: {field: first_date}, title: null}
+              x: {field: spend_eur, type: quantitative, title: EUR}
+              tooltip:
+                - {field: trip}
+                - {field: first_date}
+                - {field: last_date}
+                - {field: spend_eur, title: EUR}
+        top_payees:
+          title: Top 15 payees
+          db: expenses
+          library: vega-lite
+          query: |-
+            select coalesce(payee, '(none)') as payee, round(sum(spend_eur), 2) as spend_eur
+            from expenses where kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            group by 1 order by 2 desc limit 15
+          display:
+            mark: {type: bar, color: '#4c6a8a', tooltip: true}
+            height: 340
+            encoding:
+              y: {field: payee, type: nominal, sort: '-x', title: null}
+              x: {field: spend_eur, type: quantitative, title: EUR}
+        flagged:
+          title: Flagged rows (one-offs and outliers)
+          db: expenses
+          library: table
+          query: |-
+            select date, replace(replace(coalesce(payee, ''), '<', '&lt;'), '>', '&gt;') as payee, category_path,
+                   round(spend_eur, 2) as spend_eur, one_off, outlier
+            from flagged
+            where date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            order by date desc limit 100
+          display:
+            {}
+
+    category:
+      title: Category drill-down
+      description: One top-level category over time; leave the category empty for all categories.
+      layout:
+        - [cat_total, cat_monthly, cat_monthly]
+        - [cat_sub, cat_sub, cat_payees]
+      filters:
+        category:
+          name: Category
+          type: select
+          db: expenses
+          query: |-
+            select distinct category_top from expenses
+            where kind = 'expense' and category_top is not null
+            order by 1
+        from:
+          name: From (date or month)
+          type: text
+        to:
+          name: To (date or month)
+          type: text
+        include_one_offs:
+          name: Include one-offs
+          type: select
+          options: ['1', '0']
+      charts:
+        cat_total:
+          title: Total spend
+          db: expenses
+          library: metric
+          query: |-
+            select cast(round(coalesce(sum(spend_eur), 0)) as integer) as total
+            from expenses where (coalesce(:category, '') = '' or category_top = :category)
+            and kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+          display:
+            field: total
+            suffix: ' EUR'
+        cat_monthly:
+          title: Monthly trend
+          db: expenses
+          library: vega-lite
+          query: |-
+            select month, round(sum(spend_eur), 2) as spend_eur
+            from expenses where (coalesce(:category, '') = '' or category_top = :category)
+            and kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            group by 1 order by 1
+          display:
+            mark: {type: bar, color: '#4c6a8a', tooltip: true}
+            height: 260
+            encoding:
+              x: {field: month, type: ordinal, title: null}
+              y: {field: spend_eur, type: quantitative, title: EUR}
+        cat_sub:
+          title: Sub-categories
+          db: expenses
+          library: vega-lite
+          query: |-
+            select coalesce(category_sub, '(none)') as category_sub, round(sum(spend_eur), 2) as spend_eur
+            from expenses where (coalesce(:category, '') = '' or category_top = :category)
+            and kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            group by 1 order by 2 desc limit 25
+          display:
+            mark: {type: bar, color: '#8aa4bd', tooltip: true}
+            height: 340
+            encoding:
+              y: {field: category_sub, type: nominal, sort: '-x', title: null}
+              x: {field: spend_eur, type: quantitative, title: EUR}
+        cat_payees:
+          title: Top payees
+          db: expenses
+          library: vega-lite
+          query: |-
+            select coalesce(payee, '(none)') as payee, round(sum(spend_eur), 2) as spend_eur
+            from expenses where (coalesce(:category, '') = '' or category_top = :category)
+            and kind = 'expense'
+            and date >= coalesce(nullif(:from, ''), '0000')
+            and date <= coalesce(nullif(:to, ''), '9999') || '~'
+            and (coalesce(nullif(:include_one_offs, ''), '1') = '1' or coalesce(one_off, 0) = 0)
+            group by 1 order by 2 desc limit 15
+          display:
+            mark: {type: bar, color: '#6b7280', tooltip: true}
+            height: 340
+            encoding:
+              y: {field: payee, type: nominal, sort: '-x', title: null}
+              x: {field: spend_eur, type: quantitative, title: EUR}

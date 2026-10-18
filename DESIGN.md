@@ -178,7 +178,7 @@ one_off:
   # manual: via overrides
 
 outliers:
-  method: mad                        # per category_path, robust z-score on |amount_eur|
+  method: mad                        # per category_path, robust z-score on log(spend_eur)
   threshold: 3.5
   min_samples: 8
 
@@ -203,7 +203,7 @@ tags (JSON), is_work, in_country, trip (trip tag or NULL), one_off, outlier, rul
   else `income` (positive entries such as refunds; they net against spending in category
   totals since `spend_eur` is negative for them).
 - `outlier`: among `kind = expense` rows of the same `category_path` with ≥ `min_samples`
-  rows, robust z = 0.6745·(x − median)/MAD on `spend_eur`; flagged when z > threshold
+  rows, robust z = 0.6745·(x − median)/MAD on `ln(spend_eur)` (amounts are right-skewed); flagged when z > threshold
   (only high side). Override can force true/false.
 - Indexes on date, month, category_top, kind; full-text search on payee/comment/category.
 - Convenience views: `spending` (kind = expense, all), `spending_recurring`
