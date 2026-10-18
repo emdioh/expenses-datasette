@@ -125,7 +125,8 @@ class SyntheticDB:
         """Insert a transaction and return its row id (use uuid_of for the uuid).
 
         uuid=None stores a NULL uuid; omitted generates a random one.
-        transfer_to creates the peer row in that account (amount defaults to -amount).
+        transfer_to creates the peer row in that account (amount defaults to -amount); like in
+        the app, both legs of a transfer share the uuid (they live in different accounts).
         """
         account_id, currency = self._accounts[account]
         if uuid is ...:
@@ -158,7 +159,7 @@ class SyntheticDB:
                 "INSERT INTO transactions (date, value_date, amount, account_id, status, uuid,"
                 " transfer_peer, transfer_account) VALUES (?,?,?,?,?,?,?,?)",
                 (epoch, epoch, self._minor(peer_amount, peer_cur), peer_id, status,
-                 str(uuidlib.uuid4()), tx_id, account_id),
+                 uuid, tx_id, account_id),
             ).lastrowid
             self.conn.execute(
                 "UPDATE transactions SET transfer_peer = ?, transfer_account = ? WHERE _id = ?",

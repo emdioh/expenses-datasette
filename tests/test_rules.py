@@ -171,9 +171,11 @@ def test_errors_do_not_echo_values():
 
 def test_load_invalid_yaml(tmp_path):
     p = tmp_path / "r.yaml"
-    p.write_text("a: [unclosed\n")
-    with pytest.raises(RulesError):
+    p.write_text("ok: 1\nsecretword: [unclosed\n")
+    with pytest.raises(RulesError) as ei:
         load_rules(p)
+    msg = str(ei.value)
+    assert "line" in msg and "column" in msg and "secretword" not in msg
 
 
 def test_dimensions_helpers():
@@ -187,5 +189,7 @@ def test_dimensions_helpers():
     assert dim.trip_for(["Roadtrip"]) == "Roadtrip"
     assert dim.trip_for(["Work", "paris2024", "Year2024x"]) is None
     assert dim.is_work(["Work"]) and not dim.is_work(["Other"])
+    assert dim.is_work(["WORK"]) and dim.in_country(["homeland"])
+    assert dim.trip_for(["roadtrip"]) == "roadtrip"
     assert dim.in_country(["Homeland"]) and not dim.in_country([])
     assert not Rules().dimensions.in_country(["Homeland"])

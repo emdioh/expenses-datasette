@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import sqlite3
 import subprocess
 import sys
 from datetime import date
@@ -64,6 +65,8 @@ def do_import(cfg: Config, backup: Path | None, force: bool, verbose: bool) -> s
         _out(f"source: {s.read} transactions read; {s.splits_expanded} splits expanded")
         if s.missing_uuid:
             _warn(f"{s.missing_uuid} transactions had no uuid (synthetic keys used)")
+        if s.duplicate_keys:
+            _warn(f"{s.duplicate_keys} transactions had a repeated identity key (disambiguated)")
         conn = store.open_db(cfg.db_path)
         try:
             result = store.merge(
@@ -90,6 +93,8 @@ def do_import(cfg: Config, backup: Path | None, force: bool, verbose: bool) -> s
         f"{result.unchanged} unchanged, {result.kept_missing} kept (older than backup range), "
         f"{result.dropped} dropped (deleted in app)"
     )
+    if result.older_backup:
+        _warn("backup ends before the latest import (older backup): nothing was dropped")
     if result.dropped:
         _out(f"note: {result.dropped} transactions are no longer in the backup and were marked deleted")
     archived = backup_mod.archive_backup(path, cfg.data_dir)
@@ -104,12 +109,11 @@ def _update_fx(conn, offline: bool) -> None:
     if offline:
         _out("fx: offline, using cached rates")
         return
+    # Only account currencies need a rate: an original currency is used only when it is EUR.
     curs = {
         r[0]
         for r in conn.execute(
-            "SELECT account_currency FROM transactions WHERE deleted_at IS NULL "
-            "UNION SELECT original_currency FROM transactions "
-            "WHERE deleted_at IS NULL AND original_currency IS NOT NULL"
+            "SELECT DISTINCT account_currency FROM transactions WHERE deleted_at IS NULL"
         )
     } - {"EUR"}
     span = conn.execute(
@@ -166,9 +170,10 @@ def do_serve(cfg: Config, port: int) -> int:
         raise CliError("no analysis database yet: run `expenses import` first")
     _out(f"serving http://127.0.0.1:{port}/ (Ctrl-C to stop)")
     sys.stdout.flush()
+    env = {k: v for k, v in os.environ.items() if k != PASSWORD_ENV}  # keep the secret out
     try:
         return subprocess.run(
-            [sys.executable, "-m", "datasette", *datasette_args(cfg.db_path, port)]
+            [sys.executable, "-m", "datasette", *datasette_args(cfg.db_path, port)], env=env
         ).returncode
     except KeyboardInterrupt:
         return 0
@@ -230,6 +235,10 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _one_line(exc: BaseException) -> str:
+    return " ".join(str(exc).split()) or type(exc).__name__
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -251,6 +260,18 @@ def main(argv: list[str] | None = None) -> int:
                 return do_serve(cfg, args.port)
     except (BackupError, RulesError, ConfigError, CliError) as e:
         print(f"error: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("error: interrupted", file=sys.stderr)
+        return 130
+    except sqlite3.Error as e:  # e.g. a corrupt BACKUP or analysis database
+        print(f"error: database error: {_one_line(e)}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"error: {_one_line(e)}", file=sys.stderr)
+        return 1
+    except Exception as e:  # last resort: no traceback, and no message that could hold row data
+        print(f"error: unexpected {type(e).__name__}", file=sys.stderr)
         return 1
     return 0
 

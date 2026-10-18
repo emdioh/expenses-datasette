@@ -5,8 +5,8 @@ description = "Analyse MyExpenses backups with Datasette"
 requires-python = ">=3.11"
 dependencies = [
     "cryptography>=42",
-    "datasette>=0.65",
-    "datasette-dashboards>=0.7",
+    "datasette>=0.65,<1.0",
+    "datasette-dashboards>=0.7,<0.9",
     "pyyaml>=6",
     "sqlite-utils>=3.37",
 ]

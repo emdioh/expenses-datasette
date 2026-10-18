@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import csv
 import io
+import math
 import sqlite3
 import urllib.error
 import urllib.request
@@ -17,6 +18,7 @@ ECB_URL = "https://data-api.ecb.europa.eu/service/data/EXR/D.{cur}.EUR.SP00.A"
 USER_AGENT = "expenses-datasette/0.1 (+personal expense analysis)"
 TIMEOUT_SECONDS = 30
 LOOKBACK_DAYS = 7  # extra days before `start` so weekends/holidays resolve
+MAX_RATE_GAP_DAYS = 10  # a rate further away than this from the requested date is not used
 
 Row = tuple[str, str, float]  # (date iso, currency, rate per 1 EUR)
 Fetcher = Callable[[list[str], date, date], list[Row]]
@@ -41,8 +43,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS fx_meta ("
-        "currency TEXT PRIMARY KEY, last_checked_date TEXT NOT NULL)"
+        "currency TEXT PRIMARY KEY, last_checked_date TEXT NOT NULL, earliest_start TEXT)"
     )
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(fx_meta)")}
+    if "earliest_start" not in cols:  # database created by an older version
+        conn.execute("ALTER TABLE fx_meta ADD COLUMN earliest_start TEXT")
     conn.commit()
 
 
@@ -77,7 +82,12 @@ def fetch_ecb(currencies: list[str], start: date, end: date) -> list[Row]:
         raise FxError(f"ECB request failed: HTTP {exc.code}") from exc
     except (urllib.error.URLError, OSError, UnicodeDecodeError) as exc:
         raise FxError(f"ECB request failed: {exc}") from exc
-    return parse_ecb_csv(text)
+    except Exception as exc:  # never let an unexpected error escape with a traceback
+        raise FxError(f"ECB request failed: {type(exc).__name__}") from exc
+    try:
+        return parse_ecb_csv(text)
+    except Exception as exc:
+        raise FxError(f"ECB response not understood: {type(exc).__name__}") from exc
 
 
 def _cached_span(conn: sqlite3.Connection, currency: str) -> tuple[date, date] | None:
@@ -94,6 +104,24 @@ def _last_checked(conn: sqlite3.Connection, currency: str) -> str | None:
         "SELECT last_checked_date FROM fx_meta WHERE currency = ?", (currency,)
     ).fetchone()
     return row[0] if row else None
+
+
+def _earliest_requested(conn: sqlite3.Connection, currency: str) -> date | None:
+    row = conn.execute(
+        "SELECT earliest_start FROM fx_meta WHERE currency = ?", (currency,)
+    ).fetchone()
+    return date.fromisoformat(row[0]) if row and row[0] else None
+
+
+def _record_requested_start(conn: sqlite3.Connection, currency: str, start: date) -> None:
+    prev = _earliest_requested(conn, currency)
+    if prev is not None and prev <= start:
+        return
+    conn.execute(
+        "INSERT INTO fx_meta (currency, last_checked_date, earliest_start) VALUES (?, '', ?) "
+        "ON CONFLICT(currency) DO UPDATE SET earliest_start = excluded.earliest_start",
+        (currency, start.isoformat()),
+    )
 
 
 def update_rates(
@@ -127,7 +155,9 @@ def update_rates(
                 after_ranges.add((want_from, want_to, cur))
             continue
         lo, hi = span
-        if lo > start:
+        earliest = _earliest_requested(conn, cur)
+        # ECB may simply have no earlier data: do not ask again for a range already requested
+        if lo > start and (earliest is None or want_from < earliest):
             plan[(want_from, lo - timedelta(days=1))].append(cur)
         if want_to > hi and not checked_today:
             rng = (hi + timedelta(days=1), want_to)
@@ -154,9 +184,11 @@ def update_rates(
         for _, cur, _ in rows:
             got[cur] += 1
         for cur in curs:
+            _record_requested_start(conn, cur, r_start)
             if (r_start, r_end, cur) in after_ranges:
                 conn.execute(
-                    "INSERT OR REPLACE INTO fx_meta (currency, last_checked_date) VALUES (?, ?)",
+                    "INSERT INTO fx_meta (currency, last_checked_date) VALUES (?, ?) "
+                    "ON CONFLICT(currency) DO UPDATE SET last_checked_date = excluded.last_checked_date",
                     (cur, today_iso),
                 )
     conn.commit()
@@ -186,7 +218,11 @@ class RateLookup:
         if not dates:
             return None
         i = bisect.bisect_right(dates, date_iso)  # dates[:i] are <= date_iso
-        return self._rates[currency][i - 1 if i > 0 else 0]
+        j = i - 1 if i > 0 else 0  # latest earlier rate, else earliest later one
+        gap = abs((date.fromisoformat(dates[j]) - date.fromisoformat(date_iso)).days)
+        if gap > MAX_RATE_GAP_DAYS:
+            return None
+        return self._rates[currency][j]
 
 
 def to_eur(
@@ -201,7 +237,7 @@ def to_eur(
     if account_currency == "EUR":
         return round(amount, 2)
     if original_currency == "EUR" and original_amount is not None:
-        return round(original_amount, 2)
+        return round(math.copysign(abs(original_amount), amount), 2)
     rate = lookup.rate(account_currency, date_iso)
     if not rate:
         return None

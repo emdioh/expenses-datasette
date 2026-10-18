@@ -355,8 +355,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=42" },
-    { name = "datasette", specifier = ">=0.65" },
-    { name = "datasette-dashboards", specifier = ">=0.7" },
+    { name = "datasette", specifier = ">=0.65,<1.0" },
+    { name = "datasette-dashboards", specifier = ">=0.7,<0.9" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "sqlite-utils", specifier = ">=3.37" },
 ]

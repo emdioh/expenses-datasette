@@ -119,15 +119,55 @@ def test_lookup_fallbacks(conn):
     assert lk.rate("EUR", "2026-03-07") == 1.0
     assert lk.rate("USD", "2026-03-06") == 1.1  # exact
     assert lk.rate("USD", "2026-03-08") == 1.1  # weekend -> earlier
-    assert lk.rate("USD", "2026-03-20") == 1.2  # after last -> latest
-    assert lk.rate("USD", "2026-01-01") == 1.1  # before first -> earliest later
+    assert lk.rate("USD", "2026-03-15") == 1.2  # after last -> latest
+    assert lk.rate("USD", "2026-03-02") == 1.1  # before first -> earliest later
     assert lk.rate("XXX", "2026-03-06") is None
+
+
+def test_lookup_gap_limit(conn):
+    lk = make_lookup(conn, [("2026-03-06", "USD", 1.1)])
+    gap = fx.MAX_RATE_GAP_DAYS
+    assert lk.rate("USD", "2026-03-16") == 1.1 and gap == 10  # exactly 10 days away
+    assert lk.rate("USD", "2026-03-17") is None  # 11 days after the last rate
+    assert lk.rate("USD", "2026-02-24") == 1.1  # 10 days before the first
+    assert lk.rate("USD", "2026-02-23") is None
+    assert to_eur(-10.0, "USD", None, None, "2026-06-01", lk) is None
+
+
+def test_head_range_not_refetched_when_ecb_has_no_earlier_data(conn):
+    class LateData(FakeFetcher):
+        def __call__(self, currencies, start, end):
+            rows = super().__call__(currencies, max(start, date(2026, 3, 2)), end)
+            self.calls[-1] = (list(currencies), start, end)  # record what was asked
+            return rows
+
+    f = LateData()
+    update_rates(conn, ["USD"], date(2026, 2, 1), date(2026, 3, 6), f, TODAY)
+    assert len(f.calls) == 1 and count(conn, "USD") > 0
+    f.calls.clear()
+    later = date(2026, 3, 11)
+    update_rates(conn, ["USD"], date(2026, 2, 1), date(2026, 3, 11), f, later)
+    # only the tail is fetched; the head (before the first cached rate) is not asked again
+    assert f.calls == [(["USD"], date(2026, 3, 7), date(2026, 3, 11))]
+    # an even earlier start is still requested once
+    f.calls.clear()
+    update_rates(conn, ["USD"], date(2026, 1, 1), date(2026, 3, 11), f, later)
+    assert [c[1:] for c in f.calls] == [(date(2025, 12, 25), date(2026, 3, 1))]
+
+
+def test_old_fx_meta_table_is_migrated():
+    c = sqlite3.connect(":memory:")
+    c.execute("CREATE TABLE fx_meta (currency TEXT PRIMARY KEY, last_checked_date TEXT NOT NULL)")
+    ensure_schema(c)
+    assert "earliest_start" in {r[1] for r in c.execute("PRAGMA table_info(fx_meta)")}
 
 
 def test_to_eur_branches(conn):
     lk = make_lookup(conn, [("2026-03-06", "USD", 2.0)])
     assert to_eur(10.0, "EUR", 99.0, "USD", "2026-03-06", lk) == 10.0
     assert to_eur(5000.0, "UZS", 12.345, "EUR", "2026-03-06", lk) == 12.35
+    assert to_eur(-5000.0, "UZS", 12.345, "EUR", "2026-03-06", lk) == -12.35  # sign of amount
+    assert to_eur(5000.0, "UZS", -12.345, "EUR", "2026-03-06", lk) == 12.35
     assert to_eur(-10.0, "USD", None, None, "2026-03-06", lk) == -5.0
     assert to_eur(-10.0, "USD", 3.0, "GBP", "2026-03-06", lk) == -5.0
     assert to_eur(-10.0, "UZS", None, None, "2026-03-06", lk) is None
@@ -186,3 +226,18 @@ def test_fetch_ecb_errors(monkeypatch, exc, expect_error):
             fx.fetch_ecb(["USD"], date(2026, 3, 1), date(2026, 3, 6))
     else:
         assert fx.fetch_ecb(["USD"], date(2026, 3, 1), date(2026, 3, 6)) == []
+
+
+def test_fetch_ecb_wraps_unexpected_errors(monkeypatch):
+    def boom(req, timeout=None):
+        raise ValueError("secret detail")
+
+    monkeypatch.setattr(fx.urllib.request, "urlopen", boom)
+    with pytest.raises(FxError) as ei:
+        fx.fetch_ecb(["USD"], date(2026, 3, 1), date(2026, 3, 6))
+    assert "secret detail" not in str(ei.value)
+
+    monkeypatch.setattr(fx.urllib.request, "urlopen", lambda req, timeout=None: FakeResponse(b"x"))
+    monkeypatch.setattr(fx, "parse_ecb_csv", lambda text: 1 / 0)
+    with pytest.raises(FxError):
+        fx.fetch_ecb(["USD"], date(2026, 3, 1), date(2026, 3, 6))

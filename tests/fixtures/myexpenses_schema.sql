@@ -11,3 +11,7 @@ CREATE TABLE paymentmethods (_id integer primary key autoincrement, label text n
 CREATE TABLE tags (_id integer primary key autoincrement, label text UNIQUE not null, color integer default null);
 CREATE TABLE transactions(_id integer primary key autoincrement, comment text, date datetime not null, value_date datetime not null, amount integer not null, cat_id integer references categories(_id), account_id integer not null references accounts(_id) ON DELETE CASCADE, payee_id integer references payee(_id), transfer_peer integer references transactions(_id), transfer_account integer references accounts(_id),method_id integer references paymentmethods(_id),parent_id integer references transactions(_id) ON DELETE CASCADE, status integer default 0, cr_status text not null check (cr_status in ('UNRECONCILED','CLEARED','RECONCILED','VOID')) default 'RECONCILED', number text, uuid text, original_amount integer, original_currency text, debt_id integer references debts(_id) ON DELETE SET NULL);
 CREATE TABLE transactions_tags ( tag_id integer references tags(_id) ON DELETE CASCADE, transaction_id integer references transactions(_id) ON DELETE CASCADE, primary key (tag_id,transaction_id));
+CREATE UNIQUE INDEX transactions_account_uuid_index ON transactions(account_id,uuid,status);
+CREATE INDEX transactions_cat_id_index ON transactions(cat_id);
+CREATE INDEX transactions_payee_id_index ON transactions(payee_id);
+CREATE INDEX transactions_parent_id_index ON transactions(parent_id);

@@ -41,6 +41,7 @@ class SourceStats:
     skipped_by_status: dict[int, int] = field(default_factory=dict)
     splits_expanded: int = 0  # split parents replaced by their children
     missing_uuid: int = 0  # rows for which a key was synthesized
+    duplicate_keys: int = 0  # rows whose identity key repeated and was disambiguated
 
 
 @dataclass
@@ -106,6 +107,10 @@ def _read(conn: sqlite3.Connection, zone: ZoneInfo) -> SourceData:
         r["_id"]: (r["label"], r["currency"])
         for r in conn.execute("SELECT _id, label, currency FROM accounts")
     }
+    account_keys = {
+        r["_id"]: r["uuid"] or str(r["_id"])
+        for r in conn.execute("SELECT _id, uuid FROM accounts")
+    }
     cat_paths = _category_paths(conn)
     payees = {r["_id"]: r["name"] for r in conn.execute("SELECT _id, name FROM payee")}
     methods = {
@@ -170,6 +175,9 @@ def _read(conn: sqlite3.Connection, zone: ZoneInfo) -> SourceData:
         date = datetime.fromtimestamp(row["date"], zone).date().isoformat()
         payee = payees.get(payee_id)
         uuid = row["uuid"]
+        if uuid and is_transfer:
+            # both legs of a transfer carry the same uuid (unique per account only)
+            uuid = f"{uuid}:{account_keys[account_id]}"
         if not uuid:
             stats.missing_uuid += 1
             key = (label, date, row["amount"], " > ".join(path), payee, comment)
@@ -203,6 +211,14 @@ def _read(conn: sqlite3.Connection, zone: ZoneInfo) -> SourceData:
             )
         )
 
+    # Identity keys must be unique within a backup; never crash, disambiguate deterministically.
+    key_count: Counter[str] = Counter()
+    for rec in records:
+        key_count[rec.uuid] += 1
+        n = key_count[rec.uuid]
+        if n > 1:
+            rec.uuid = f"{rec.uuid}#{n}"
+            stats.duplicate_keys += 1
     stats.read = len(records)
     stats.skipped_by_status = dict(sorted(skipped.items()))
     return SourceData(records=records, stats=stats)

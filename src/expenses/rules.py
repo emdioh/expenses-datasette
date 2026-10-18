@@ -141,17 +141,19 @@ class Dimensions:
 
     def trip_for(self, tags: Iterable[str]) -> str | None:
         """First trip tag (sorted for determinism), or None."""
-        extra = set(self.extra_trip_tags)
+        extra = {t.casefold() for t in self.extra_trip_tags}
         for tag in sorted(tags):
-            if tag in extra or self.trip_tag_pattern.search(tag):
+            if tag.casefold() in extra or self.trip_tag_pattern.search(tag):
                 return tag
         return None
 
     def is_work(self, tags: Iterable[str]) -> bool:
-        return bool(set(self.work_tags) & set(tags))
+        return bool({t.casefold() for t in self.work_tags} & {t.casefold() for t in tags})
 
     def in_country(self, tags: Iterable[str]) -> bool:
-        return self.country_tag is not None and self.country_tag in set(tags)
+        return self.country_tag is not None and self.country_tag.casefold() in {
+            t.casefold() for t in tags
+        }
 
 
 @dataclass(frozen=True)
@@ -389,6 +391,8 @@ def load_rules(path: Path | None) -> Rules:
         return Rules()
     try:
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    except yaml.YAMLError:
-        raise RulesError("invalid YAML syntax") from None
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)  # position only, never file content
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        raise RulesError(f"invalid YAML syntax{where}") from None
     return parse_rules(data)

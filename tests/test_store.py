@@ -98,10 +98,11 @@ def test_missing_within_range_is_soft_deleted(conn):
 
 
 def test_revive(conn):
-    store.merge(conn, src(rec("a", tags=["T"]), rec("b", date="2024-03-01")), "b1")
-    store.merge(conn, src(rec("b", date="2024-03-01")), "b2")
+    b, c = rec("b", date="2024-03-01"), rec("c", date="2024-03-12")
+    store.merge(conn, src(rec("a", tags=["T"]), b, c), "b1")
+    store.merge(conn, src(b, c), "b2")
     assert "a" not in live(conn)
-    r = store.merge(conn, src(rec("a", tags=["T"]), rec("b", date="2024-03-01")), "b3")
+    r = store.merge(conn, src(rec("a", tags=["T"]), b, c), "b3")
     assert r.updated == 1 and r.revived == 1
     row = live(conn)["a"]
     assert row["deleted_at"] is None and row["last_seen_backup"] == "b3"
@@ -144,3 +145,41 @@ def test_tags_stay_in_sync(conn):
     assert tags_of(conn, "b") == ["B", "C"]
     n = conn.execute("SELECT COUNT(*) FROM transaction_tags").fetchone()[0]
     assert n == 2
+
+
+@pytest.mark.parametrize(
+    "ts, force",
+    [
+        (None, False),  # unknown timestamp, data ends before what we hold
+        (None, True),
+        (datetime(2024, 5, 1), True),  # older timestamp re-imported with --force
+    ],
+)
+def test_older_backup_never_drops(conn, ts, force):
+    store.merge(
+        conn, src(rec("a", date="2024-03-01"), rec("late", date="2024-05-20")), "b1",
+        datetime(2024, 5, 21),
+    )
+    older = src(rec("a", date="2024-03-01"), rec("n", date="2024-03-02"))
+    r = store.merge(conn, older, "b2", ts, force=force)
+    assert r.older_backup and not r.skipped
+    assert r.dropped == 0 and r.kept_missing == 1 and r.inserted == 1
+    assert {"a", "late", "n"} <= set(live(conn))
+
+
+def test_newer_backup_with_newest_entry_deleted_drops_it(conn):
+    store.merge(
+        conn, src(rec("a", date="2024-03-01"), rec("late", date="2024-05-20")), "b1",
+        datetime(2024, 5, 21),
+    )
+    # newer timestamp: the newest entry was deleted in the app, so the data ends earlier
+    r = store.merge(conn, src(rec("a", date="2024-03-01")), "b2", datetime(2024, 6, 1))
+    assert not r.older_backup
+    assert r.dropped == 1
+    assert set(live(conn)) == {"a"}
+
+
+def test_not_older_flag_unset(conn):
+    store.merge(conn, src(rec("a", date="2024-03-01")), "b1", datetime(2024, 4, 1))
+    r = store.merge(conn, src(rec("a", date="2024-03-01")), "b2", datetime(2024, 4, 2))
+    assert not r.older_backup

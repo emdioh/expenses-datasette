@@ -69,7 +69,8 @@ expenses check-rules
 - `import`: takes the newest backup (or `--backup FILE`), merges it into the database and copies
   the backup to `data_dir/backups/`. A backup that is not newer than the last import is skipped
   unless `--force`. Transactions that vanished from the app within the backup's date range are
-  soft-deleted (reported as "dropped"); older ones are kept.
+  soft-deleted (reported as "dropped"); older ones are kept. A backup that ends before data
+  already imported (older backup) never drops anything and prints a warning.
 - `build`: fetches missing ECB rates for the currencies present (skipped with `--offline`; failures
   are warnings, affected rows get no EUR amount), then rebuilds the derived `expenses` table
   from transactions, rules and rates. Use it after editing the rules.
@@ -85,8 +86,8 @@ merge: 10 inserted, 0 updated, 0 unchanged, 0 kept (older than backup range), 0 
 build: 4300 rows (4290 expense, 3 income, 7 transfer); 0 without EUR; 26 one-offs; 58 outliers
 ```
 
-Errors (bad config, wrong password, invalid rules, no backup) print one line to stderr and exit
-with status 1.
+Errors (bad config, wrong password, invalid rules, no backup, corrupt backup, I/O problems) print
+one line to stderr and exit with status 1 (130 on Ctrl-C); no traceback, no row data.
 
 ## Weekly refresh
 
@@ -110,7 +111,9 @@ trip, one-off, outlier; full-text search) and convenience views: `spending`,
 `spending_recurring`, `transfers`, `uncategorized`, `flagged`. Canned queries cover spending by
 month and category, by period, by tag, work spending, country versus not-country, per-trip
 totals, top payees, uncategorized rows, one-offs, outliers, transfers, original-currency
-breakdown and rows missing an EUR amount. The "Overview" dashboard
+breakdown and rows missing an EUR amount. Refunds (positive entries) net against spending.
+`include_one_offs` accepts 1/0 (also false/no/off to exclude). The server only answers requests
+with a loopback Host header (127.0.0.1, localhost, [::1]). The "Overview" dashboard
 (datasette-dashboards) shows KPIs and charts with date-range and one-off filters.
 
 ## Limitations

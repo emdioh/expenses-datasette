@@ -114,6 +114,9 @@ def test_empty_comment_and_null_method(db):
 
 def test_transfers(db):
     db.add_transaction("Main", date(2024, 2, 1), -100, transfer_to="Swiss", comment="t")
+    shared = db.uuid_of(1)
+    assert shared == db.uuid_of(2)  # the app gives both legs the same uuid
+    acc = dict(db.conn.execute("SELECT label, uuid FROM accounts"))
     db.close()
     data = read_source(db.path)
     assert len(data.records) == 2
@@ -122,6 +125,35 @@ def test_transfers(db):
     swiss = next(r for r in data.records if r.account == "Swiss")
     assert main.amount == -100 and swiss.amount == 100
     assert main.uuid != swiss.uuid
+    assert main.uuid == f"{shared}:{acc['Main']}"
+    assert swiss.uuid == f"{shared}:{acc['Swiss']}"
+
+
+def test_transfer_key_falls_back_to_account_id(db):
+    db.add_transaction("Main", date(2024, 2, 1), -10, uuid="x", transfer_to="Swiss")
+    db.conn.execute("UPDATE accounts SET uuid = NULL WHERE label = 'Main'")
+    db.close()
+    keys = {r.account: r.uuid for r in read_source(db.path).records}
+    assert keys["Main"] == "x:1"  # Main is account _id 1"
+
+
+def test_non_transfer_key_is_plain_uuid(db):
+    db.add_transaction("Main", date(2024, 2, 1), -10, uuid="plain")
+    db.close()
+    assert [r.uuid for r in read_source(db.path).records] == ["plain"]
+
+
+def test_repeated_keys_are_disambiguated(db):
+    # same account + uuid is only possible with a different status (unique index)
+    db.add_transaction("Main", date(2024, 2, 1), -10, uuid="dup", status=0)
+    db.add_transaction("Main", date(2024, 2, 2), -20, uuid="dup", status=1)
+    db.add_transaction("Main", date(2024, 2, 3), -30, uuid="dup", status=5)
+    db.close()
+    data = read_source(db.path)
+    keys = [r.uuid for r in data.records]
+    assert keys == ["dup", "dup#2", "dup#3"]
+    assert data.stats.duplicate_keys == 2
+    assert [r.uuid for r in read_source(db.path).records] == keys
 
 
 def test_split_children_inherit_and_parent_not_emitted(db):

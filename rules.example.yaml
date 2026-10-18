@@ -41,7 +41,8 @@ outliers:
   threshold: 3.5
   min_samples: 8       # categories with fewer expenses are never flagged
 
-# Per-transaction corrections by uuid.
+# Per-transaction corrections by identity key: the transaction uuid (for transfer legs
+# "<uuid>:<account uuid>").
 # set keys: category, payee, comment, kind (expense|income|transfer),
 # one_off, outlier (false dismisses a flagged outlier), add_tags, remove_tags.
 overrides:

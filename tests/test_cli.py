@@ -208,6 +208,7 @@ def test_serve_command(env, capsys, monkeypatch):
     code, out, _ = run(env, capsys, "serve", "--port", "8123")
     assert code == 0
     cmd = seen[0]
+    assert "--plugins-dir" in cmd
     assert cmd[1:4] == ["-m", "datasette", "serve"]
     assert str(env.data / "expenses.db") in cmd and "8123" in cmd
     assert "http://127.0.0.1:8123/" in out
@@ -226,3 +227,83 @@ def test_explicit_backup_option(env, capsys):
     p = make_backup(env.tmp, "20240101-000000", BASE_ROWS)
     code, out, _ = run(env, capsys, "import", "--backup", str(p))
     assert code == 0 and "backup-20240101-000000.zip" in out
+
+
+def test_serve_env_has_no_password(env, capsys, monkeypatch):
+    make_backup(env.backups, "20250110-120000", BASE_ROWS)
+    run(env, capsys, "run", "--no-serve", "--offline")
+    monkeypatch.setenv(cli.PASSWORD_ENV, PASSWORD)
+    monkeypatch.setenv("KEEP_ME", "1")
+    seen = []
+
+    class P:
+        returncode = 0
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **kw: seen.append(kw) or P())
+    assert run(env, capsys, "serve")[0] == 0
+    assert cli.PASSWORD_ENV not in seen[0]["env"] and seen[0]["env"]["KEEP_ME"] == "1"
+    assert PASSWORD not in "".join(seen[0]["env"].values())
+
+
+def test_fx_only_for_non_eur_account_currencies(env, capsys, monkeypatch):
+    rows = [
+        ("Main", date(2025, 1, 5), -20.0, "Food", {"original": (3000.0, "JPY")}),
+        ("Main", date(2025, 1, 6), -10.0, "Food", {"original": (10.0, "EUR")}),
+    ]
+    make_backup(env.backups, "20250110-120000", rows)
+    calls = []
+    monkeypatch.setattr(fx, "fetch_ecb", lambda c, s, e: calls.append(c) or [])
+    code, out, err = run(env, capsys, "run", "--no-serve")
+    assert code == 0, err
+    assert calls == [] and "no foreign currencies" in out and err == ""
+
+
+def test_older_backup_warning_and_nothing_dropped(env, capsys):
+    make_backup(env.backups, "20250110-120000", BASE_ROWS)
+    run(env, capsys, "import", "--offline")
+    older = make_backup(env.tmp, "20250101-000000", BASE_ROWS[:2])  # older stamp
+    code, out, err = run(env, capsys, "import", "--backup", str(older))
+    assert code == 0 and "skipped" in out
+    code, out, err = run(env, capsys, "import", "--backup", str(older), "--force")
+    assert code == 0 and "older backup" in err
+    assert "0 dropped" in out and "2 kept" in out
+
+
+def test_corrupt_backup_file_is_clean_error(env, capsys):
+    work = env.tmp / "corrupt"
+    work.mkdir()
+    (work / "BACKUP").write_bytes(b"this is not a sqlite database" * 50)
+    zpath = env.backups / "backup-20250110-120000.zip"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.write(work / "BACKUP", "BACKUP")
+    code, out, err = run(env, capsys, "import")
+    assert code == 1
+    assert err.startswith("error:") and err.count("\n") == 1 and "Traceback" not in err
+
+
+@pytest.mark.parametrize("exc, code, text", [
+    (sqlite3.OperationalError("disk I/O error"), 1, "error: database error: disk I/O error"),
+    (PermissionError(13, "Permission denied"), 1, "error: [Errno 13] Permission denied"),
+    (KeyboardInterrupt(), 130, "error: interrupted"),
+    (RuntimeError("payee ShopA 12.5"), 1, "error: unexpected RuntimeError"),
+])
+def test_unexpected_errors_are_one_line(env, capsys, monkeypatch, exc, code, text):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(cli, "do_build", boom)
+    got, out, err = run(env, capsys, "build")
+    assert got == code
+    assert err.strip() == text and "Traceback" not in err and "ShopA" not in err
+
+
+def test_non_fx_error_in_fetch_ecb_is_a_warning(env, capsys, monkeypatch):
+    make_backup(env.backups, "20250110-120000", BASE_ROWS)
+
+    def boom(*a, **k):
+        raise ValueError("secret row detail")
+
+    monkeypatch.setattr(fx.urllib.request, "urlopen", boom)
+    code, out, err = run(env, capsys, "run", "--no-serve")
+    assert code == 0 and "warning: fx fetch failed" in err
+    assert "secret row detail" not in err and "Traceback" not in err

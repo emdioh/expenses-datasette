@@ -71,6 +71,7 @@ class MergeResult:
     skipped: bool = False
     skip_reason: str | None = None  # "not_newer" | "empty_source"
     empty_source: bool = False  # suspicious: nothing was changed
+    older_backup: bool = False  # backup ends before the latest import: nothing is dropped
 
 
 def open_db(path: str | Path) -> sqlite3.Connection:
@@ -128,6 +129,11 @@ def _latest_import(conn: sqlite3.Connection) -> str | None:
     return row[0]
 
 
+def _latest_max_date(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute("SELECT MAX(max_date) FROM imports WHERE max_date IS NOT NULL").fetchone()
+    return row[0]
+
+
 def merge(
     conn: sqlite3.Connection,
     source: SourceData,
@@ -153,6 +159,16 @@ def merge(
             return result
 
     min_date = source.min_date
+    # Never drop anything based on a backup older than our state (also with --force). The
+    # backup timestamp decides when known; otherwise a backup ending before data we already
+    # hold is assumed older. (Comparing dates alone would misfire when the newest entry
+    # was deleted in the app.)
+    latest = _latest_import(conn)
+    if ts is not None and latest is not None:
+        result.older_backup = ts < latest
+    else:
+        latest_max = _latest_max_date(conn)
+        result.older_backup = latest_max is not None and source.max_date < latest_max
     now = _normalize_ts(datetime.now(UTC))
     try:
         conn.execute("BEGIN")
@@ -199,7 +215,7 @@ def merge(
         for uuid, old in existing.items():
             if uuid in seen or old["deleted_at"] is not None:
                 continue
-            if old["date"] < min_date:
+            if result.older_backup or old["date"] < min_date:
                 result.kept_missing += 1
             else:
                 conn.execute("UPDATE transactions SET deleted_at = ? WHERE uuid = ?", (now, uuid))

@@ -43,10 +43,12 @@ COLUMNS = (
 )
 FTS_COLUMNS = ["payee", "comment", "category_path"]
 MAD_SCALE = 0.6745
+MEAN_AD_SCALE = 1.2533  # mean absolute deviation -> sigma, for when the MAD is zero
 
 VIEWS = {
-    "spending": "kind = 'expense'",
-    "spending_recurring": "kind = 'expense' AND one_off = 0",
+    # income rows (refunds) are included: spend_eur is negative for them, so they net out
+    "spending": "kind IN ('expense', 'income')",
+    "spending_recurring": "kind IN ('expense', 'income') AND one_off = 0",
     "transfers": "kind = 'transfer'",
     "uncategorized": "kind != 'transfer' AND category_path IS NULL",
     "flagged": "one_off = 1 OR outlier = 1",
@@ -79,8 +81,11 @@ def _apply_actions(row: dict[str, Any], act: Actions) -> None:
         row["payee"] = act.payee
     if act.comment is not None:
         row["comment"] = act.comment
-    tags = [t for t in row["tags"] if t not in act.remove_tags]
-    tags += [t for t in act.add_tags if t not in tags]
+    removed = {t.casefold() for t in act.remove_tags}
+    tags = [t for t in row["tags"] if t.casefold() not in removed]
+    for t in act.add_tags:
+        if t.casefold() not in {x.casefold() for x in tags}:
+            tags.append(t)
     row["tags"] = tags
 
 
@@ -106,12 +111,15 @@ def _outlier_ids(rows: list[dict[str, Any]], rules: Rules) -> set[str]:
         values = [math.log(r["spend_eur"]) for r in group]
         median = statistics.median(values)
         mad = statistics.median(abs(v - median) for v in values)
-        if mad == 0:
-            continue
+        if mad > 0:
+            scale = mad / MAD_SCALE
+        else:  # more than half the values are identical: use the mean absolute deviation
+            mean_ad = statistics.fmean(abs(v - median) for v in values)
+            if mean_ad == 0:
+                continue
+            scale = mean_ad * MEAN_AD_SCALE
         flagged.update(
-            r["uuid"]
-            for r, v in zip(group, values)
-            if MAD_SCALE * (v - median) / mad > cfg.threshold
+            r["uuid"] for r, v in zip(group, values) if (v - median) / scale > cfg.threshold
         )
     return flagged
 

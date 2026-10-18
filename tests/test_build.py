@@ -105,7 +105,8 @@ def test_transfers_app_and_rule(db, conn):
     add(db, "Main", date(2024, 3, 6), -50, uuid="t2", payee="Some Person", category="Family")
     add(db, "Main", date(2024, 3, 7), -50, uuid="t3", payee="Some Person", category="Other")
     res = run(db, conn, {"transfer_rules": [{"match": {"payee": "some person", "category": "Family"}}]})
-    assert row(conn, "t1")["kind"] == "transfer"
+    t1 = conn.execute("SELECT kind FROM expenses WHERE uuid LIKE 't1:%'").fetchall()
+    assert [r["kind"] for r in t1] == ["transfer", "transfer"]  # both legs, keyed per account
     assert row(conn, "t2")["kind"] == "transfer"
     assert row(conn, "t2")["rule_notes"] == "transfer_rule#0"
     assert row(conn, "t3")["kind"] == "expense"
@@ -171,7 +172,8 @@ def test_one_off_by_category_and_threshold(db, conn):
     assert flags == {"cat_top": 1, "cat_path": 1, "plain": 0, "big_uncat": 1,
                      "almost_uncat": 0, "big_cat": 0, "big_income": 0}
     assert res.one_offs == 3
-    assert conn.execute("SELECT COUNT(*) FROM spending_recurring").fetchone()[0] == 3
+    # spending_recurring includes the income row (refund) but not the 3 one-offs
+    assert conn.execute("SELECT COUNT(*) FROM spending_recurring").fetchone()[0] == 4
 
 
 def test_uncategorized_after_rule_is_not_threshold_one_off(db, conn):
@@ -198,14 +200,45 @@ def test_outlier_detection(db, conn):
 
 
 def test_outlier_small_group_and_zero_mad(db, conn):
+    # MAD is 0 (most values identical): falls back to the mean absolute deviation
     for i in range(7):
         add(db, "Main", date(2024, 3, 1 + i), -10, uuid=f"s{i}", category="Small")
-    add(db, "Main", date(2024, 3, 10), -900, uuid="small_spike", category="Small")  # 8 -> ok size, MAD 0
+    add(db, "Main", date(2024, 3, 10), -900, uuid="small_spike", category="Small")  # 8 rows, MAD 0
     for i in range(3):
         add(db, "Main", date(2024, 3, 1 + i), -10, uuid=f"t{i}", category="Tiny")
     add(db, "Main", date(2024, 3, 10), -900, uuid="tiny_spike", category="Tiny")
     res = run(db, conn)
-    assert res.outliers == 0
+    assert res.outliers == 1
+    assert row(conn, "small_spike")["outlier"] == 1
+    assert row(conn, "tiny_spike")["outlier"] == 0  # group below min_samples
+
+
+def test_outlier_zero_mad_nine_equal_plus_one(db, conn):
+    for i in range(9):
+        add(db, "Main", date(2024, 3, 1 + i), -800, uuid=f"e{i}", category="Rent")
+    add(db, "Main", date(2024, 3, 20), -8000, uuid="big", category="Rent")
+    res = run(db, conn)
+    assert res.outliers == 1 and row(conn, "big")["outlier"] == 1
+
+
+def test_outlier_all_identical_no_flags(db, conn):
+    for i in range(10):
+        add(db, "Main", date(2024, 3, 1 + i), -800, uuid=f"q{i}", category="Rent")
+    assert run(db, conn).outliers == 0
+
+
+def test_dimension_tags_and_tag_actions_case_insensitive(db, conn):
+    add(db, "Main", date(2024, 3, 1), -5, uuid="c1", tags=["worktag", "HOME", "lisbon"])
+    add(db, "Main", date(2024, 3, 2), -5, uuid="c2", tags=["Keep", "Gone"])
+    rules = {
+        "dimensions": {"work_tags": ["WorkTag"], "country_tag": "Home",
+                       "extra_trip_tags": ["Lisbon"]},
+        "overrides": [{"uuid": "c2", "set": {"remove_tags": ["gone"], "add_tags": ["KEEP", "New", "new"]}}],
+    }
+    run(db, conn, rules)
+    c1 = row(conn, "c1")
+    assert (c1["is_work"], c1["in_country"], c1["trip"]) == (1, 1, "lisbon")
+    assert json.loads(row(conn, "c2")["tags"]) == ["Keep", "New"]
 
 
 def test_outlier_override_dismiss_and_force(db, conn):
@@ -240,7 +273,9 @@ def test_views_indexes_and_rebuild(db, conn):
     res = run(db, conn)
     count = lambda v: conn.execute(f"SELECT COUNT(*) FROM {v}").fetchone()[0]  # noqa: E731
     assert count("expenses") == res.rows == 5
-    assert (count("spending"), count("spending_recurring")) == (2, 2)
+    assert (count("spending"), count("spending_recurring")) == (3, 3)  # incl. income (refund)
+    net = conn.execute("SELECT SUM(spend_eur) FROM spending WHERE category_path = 'Food'").fetchone()[0]
+    assert net == -45  # 5 spent, 50 refunded
     assert count("transfers") == 2
     assert count("uncategorized") == 1  # v2 (transfer rows excluded)
     assert count("flagged") == 0
