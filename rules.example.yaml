@@ -1,0 +1,58 @@
+# Example rules file with made-up values. Copy to ~/.config/expenses/rules.yaml
+# and adapt. Every section is optional. Matching is case-insensitive; a string
+# must match exactly unless it starts with "regex:" (then re.search is used).
+
+# Dimensions derived from tags.
+dimensions:
+  work_tags: [Work]                 # any of these tags -> is_work
+  country_tag: Homeland             # tag marking the explicitly tracked country -> in_country
+  country_name: Homeland            # label shown in dashboards
+  # Tags that look like Name+Year (Paris2024, Rome23) mark a trip. Override if needed:
+  trip_tag_pattern: '^[A-Z][A-Za-z]+(\d{2}|\d{4})$'
+  extra_trip_tags: [Roadtrip]       # trip tags not matching the pattern
+
+# Fix coarse or missing classification. match fields (all must hold):
+# payee, comment, category (full path or top level), account, tag.
+# set keys allowed here: category, payee, add_tags.
+payee_rules:
+  - match: {payee: "City Tax Office"}
+    set: {category: "Taxes > Income tax"}
+  - match: {payee: "regex:^corner (cafe|bar)"}
+    set: {category: "Food > Coffee", add_tags: [Treat]}
+
+# Money moved, not spent: matching rows get kind = transfer.
+transfer_rules:
+  - match: {payee: "Alex", category: "Family"}
+  - match: {comment: "regex:^card top-?up"}
+
+# Treat an account as another one (fixes rows booked on the wrong account).
+account_aliases:
+  "Old Wallet": "Main Account"
+
+# Rows that are not part of recurring spending.
+one_off:
+  uncategorized_threshold_eur: 10000   # uncategorized expense with |amount_eur| >= this
+  categories: ["Taxes", "Home > Renovation"]   # top-level or full path
+  # Individual rows: use overrides below.
+
+# Outlier detection per category path (robust z-score on spend_eur, high side only).
+outliers:
+  method: mad          # only "mad" is supported
+  threshold: 3.5
+  min_samples: 8       # categories with fewer expenses are never flagged
+
+# Per-transaction corrections by uuid.
+# set keys: category, payee, comment, kind (expense|income|transfer),
+# one_off, outlier (false dismisses a flagged outlier), add_tags, remove_tags.
+overrides:
+  - uuid: 00000000-0000-0000-0000-000000000000
+    set:
+      category: "Gifts"
+      payee: "Corner Shop"
+      comment: "birthday present"
+      kind: expense
+      one_off: true
+      add_tags: [Paris2024]
+      remove_tags: [Work]
+  - uuid: 00000000-0000-0000-0000-000000000001
+    set: {outlier: false}
