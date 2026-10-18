@@ -5,3 +5,20 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Personal data: never commit
+*.zip
+*.enc
+BACKUP
+BACKUP_PREF
+*.preferences_pb
+expenses.db
+*.sqlite
+rules.yaml
+config.toml

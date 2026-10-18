@@ -73,3 +73,5 @@
 
 sync:
     remote: "git+https://github.com/emdioh/expenses-datasette"
+export:
+    auto: true
